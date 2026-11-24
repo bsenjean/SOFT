@@ -7,12 +7,15 @@ import random
 
 working_directory = os.getenv('SOFT_DIR') + "/examples/"
 
-n_sites     = 100
-n_elec      = 30
-U           = 4.0
+Lx          = 6
+Ly          = 6
+n_elec      = 18
+U           = 2.0
 t           = 1.0
-v_choice    = ["uniform","random","ABAB","power","decreasing"][3]
+v_choice    = ["uniform","random","ABAB","power","decreasing"][4]
 SCF_maxiter = 100
+mix_cst     = 0.2
+n_sites     = Lx*Ly
 
 v = np.full((n_sites),1.*n_elec/(1.*n_sites)) # uniform v_choice
 if v_choice == "uniform":
@@ -34,6 +37,6 @@ elif v_choice == "decreasing":
 else:
   sys.exit("The v_choice is not defined. Program terminated.")
 
-output_file = working_directory + "/results/L{}_N{}_U{}_t{}_{}.dat".format(n_sites,n_elec,U,t,v_choice)
+output_file = working_directory + "/results/Lx{}_Ly{}_N{}_U{}_t{}_{}.dat".format(Lx,Ly,n_elec,U,t,v_choice)
 
-KS_orbs, E_DFT, density_exact = SOFT.run_SOFT_Hubbard(n_sites,n_elec,U,t,v,SCF_maxiter,working_directory,output_file)
+KS_orbs, E_DFT, density_exact = SOFT.run_SOFT_Hubbard(Lx,Ly,n_elec,U,t,v,SCF_maxiter,working_directory,output_file,mix_cst=mix_cst)

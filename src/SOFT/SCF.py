@@ -10,28 +10,40 @@ from scipy import optimize
 import random
 
 sys.path.insert(0, os.getcwd())
-from .BALDA import generate_potential
+from .BALDA import build_ts_table_2D
+from .BALDA import generate_potential_1D
+from .BALDA import generate_potential_2D
 
-def generate_hamiltonian(L,N,t,v):
+def generate_hamiltonian(Lx,Ly,N,t,v,periodic=True):
    """
-   Function that generates the non-interacting 1D Hubbard Hamiltonian with potential v.
+   Function that generates the non-interacting 1D or 2D Hubbard Hamiltonian with potential v = [v_00, v_01, v_02, ... , v_10, v_11, ..., v_(Lx-1,Ly-1)]
+   Each site will be labelled by a single index p=x+Lx(y−1),x=1..Lx,y=1..Ly (or p=x+Lx*y if we start at 0)
+   Periodic boundary condition: add -t to ±(L−Lx+1)-type positions, i.e. between (Lx,y) and (1,y), and between (x,Ly) and (x,1)
    """
 
-   H = np.zeros((L,L),dtype=float)
+   L = Lx*Ly
+   H = np.zeros((L,L),dtype=float) # could be H = np.diag(v.copy())
 
-   for i in range(L-1):
-    H[i,i+1] = H[i+1,i] = -t
-    H[i,i] = v[i]
+   for y in range(Ly):
+     for x in range(Lx):
+       p = x+Lx*y
+       H[p,p] = v[p]
+       if x + 1 < Lx: # neighbor along +x
+         H[p,p+1] = H[p+1,p] = -t
+       elif periodic and Lx > 1:
+         H[p,y*Lx] = H[y*Lx,p] = -t
+       if y + 1 < Ly: # neighbor along +y
+         H[p,p+Lx] = H[p+Lx,p] = -t
+       elif periodic and Ly > 1:
+         H[p,x] = H[x,p] = -t
 
-   if ((N//2) % 2 == 1): #periodic condition
-    H[L-1,0] = H[0,L-1] = -t
-   elif ((N//2) % 2 == 0): #antiperiodic condition
-    H[L-1,0] = H[0,L-1] = +t
-   H[L-1,L-1] = v[L-1]
+   # For 1D, sometimes we need antiperiodic condition, I add it here:
+   if Ly==1 and ((N//2) % 2 == 0): #antiperiodic condition
+     H[L-1,0] = H[0,L-1] = +t
 
    return H
 
-def solve_KShamiltonian(L,N,H):
+def solve_hamiltonian(L,N,H):
    """
    Function to diagonalize the Hamiltonian and extract the one-particle reduced density matrix and the orbital energies.
    """
@@ -49,21 +61,30 @@ def solve_KShamiltonian(L,N,H):
 
    return onepdm,occ,orb_energy,C
 
-def self_consistency(Nsites,Nelec,U,t,pot,beta,dbeta_dU,MAXIT,path_results_folder,output_file,mix_cst=0.4):
+def self_consistency(Lx,Ly,Nelec,U,t,pot,beta,dbeta_dU,MAXIT,path_results_folder,output_file,mix_cst=0.4):
    """
    Function to get the self-consistent energy and occupations.
    """
 
-   # Start with uniform density
-   occ = np.full((Nsites),1.*Nelec/(1.*Nsites))
-   with open(output_file,'a') as f:
+   Nsites = Lx*Ly
+
+   # Start with the opdm from the non-interacting Hamiltonian
+   t_matrix = generate_hamiltonian(Lx,Ly,Nelec,t,np.zeros(Nsites),periodic=True)
+   H0 = generate_hamiltonian(Lx,Ly,Nelec,t,pot)
+   opdm, occ, orb_energy, C = solve_hamiltonian(Nsites,Nelec,H0)
+
+   print("Fermi gap of H0:")
+   print(orb_energy[Nelec//2] - orb_energy[Nelec//2 - 1])
+
+   with open(output_file,'w') as f:
      f.write("*"*10 + " Initialization " + "*"*10 + "\n")
      f.write("""
- L = {}
+ Lx= {}
+ Ly= {}
  N = {}
  t = {}
  U = {}
- v = {}\n""".format(Nsites,Nelec,t,U,pot))
+ v = {}\n""".format(Lx,Ly,Nelec,t,U,pot))
 
      f.write(" Initial trial sites occupation:\n{}\n\n".format(occ))
 
@@ -71,19 +92,32 @@ def self_consistency(Nsites,Nelec,U,t,pot,beta,dbeta_dU,MAXIT,path_results_folde
    it      = 0
    delta_E = 1
    convergence = True
+
+   # If 2D, tabulate the non-interacting kinetic density-functional
+   if Ly > 1: n_grid, ts_table, dts_dn_table = build_ts_table_2D(t=t)
+
    while (delta_E > 1e-4 or normocc > 1e-4) and convergence: #or mix_cst < 1) and convergence:
 
 
      # Compute the vHxc contributions 
-     deHxc_dn = generate_potential(Nsites,U,t,occ,beta,dbeta_dU)[1]
+
+     if Ly == 1:
+       deHxc_dn = generate_potential_1D(Lx,U,t,occ,beta,dbeta_dU)[2]
+     else:
+       deHxc_dn = generate_potential_2D(Lx,Ly,U,t,opdm,t_matrix,n_grid,ts_table,dts_dn_table,beta,dbeta_dU)[2]
      KSpot = np.add(pot,deHxc_dn)
 
      # Construct and solve the KS Hamiltonian
-     h_SOFT = generate_hamiltonian(Nsites,Nelec,t,KSpot)
-     onepdm_SOFT, occ_new, KS_energies, KS_orbs = solve_KShamiltonian(Nsites,Nelec,h_SOFT)
+     h_SOFT = generate_hamiltonian(Lx,Ly,Nelec,t,KSpot)
+     opdm, occ_new, KS_energies, KS_orbs = solve_hamiltonian(Nsites,Nelec,h_SOFT)
 
      # compute the eHxc contribution with the new density
-     eHxc = generate_potential(Nsites,U,t,occ_new,beta,dbeta_dU)[0]
+
+     # BALDA in 1D:
+     if Ly == 1: 
+       eHxc = generate_potential_1D(Nsites,U,t,occ_new,beta,dbeta_dU)[1]
+     else:
+       eHxc = generate_potential_2D(Lx,Ly,U,t,opdm,t_matrix,n_grid,ts_table,dts_dn_table,beta,dbeta_dU)[1]
 
      # Compute the total energy
      sum_occ_eKS  = 0.
@@ -117,7 +151,7 @@ def self_consistency(Nsites,Nelec,U,t,pot,beta,dbeta_dU,MAXIT,path_results_folde
 
    return convergence, Etot, occ, it, KS_orbs
     
-def run_SOFT_Hubbard(Nsites,Nelec,U,t,pot,MAXIT,code_directory,output_file):
+def run_SOFT_Hubbard(Lx,Ly,Nelec,U,t,pot,MAXIT,code_directory,output_file,mix_cst=0.4):
 
    # Compute beta and dbeta_dU for the approximate BALDA potential
    subprocess.check_call("echo " + str(U) + " " + str(t) + " | beta_and_derivatives",shell=True, cwd = code_directory)
@@ -128,7 +162,7 @@ def run_SOFT_Hubbard(Nsites,Nelec,U,t,pot,MAXIT,code_directory,output_file):
       f.close()
 
    # Perform the self-consistent algorithm
-   conv, Etot, occ, it, KS_orbs = self_consistency(Nsites,Nelec,U,t,pot,beta,dbeta_dU,MAXIT,code_directory+"/results/",output_file)
+   conv, Etot, occ, it, KS_orbs = self_consistency(Lx,Ly,Nelec,U,t,pot,beta,dbeta_dU,MAXIT,code_directory+"/results/",output_file,mix_cst=mix_cst)
 
    # Check convergence.
    if (conv):
